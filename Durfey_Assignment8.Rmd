@@ -1,0 +1,209 @@
+---
+title: "Bayesian Methods - Assignment 8"
+author: "Ryan Durfey"
+date: "May 29, 2016"
+output: pdf_document
+---
+
+## __1. Revisit comparison of the two groups in section 1 of the workshop__
+```{r, warning=FALSE}
+library(rjags)
+library(runjags)
+library(shinystan)
+library(rstan)
+source("//Users/rdurfey/R_misc/BayesianMethods/DBDA2Eprograms/DBDA2E-utilities.R")
+
+myDataFrame = read.csv("//Users/rdurfey/R_misc/BayesianMethods/DBDA2Eprograms/TwoGroupIQ.csv")
+y = as.numeric(myDataFrame[,"Score"])
+x = as.numeric(as.factor(myDataFrame[,"Group"]))
+xLevels = levels(as.factor(myDataFrame[,"Group"]))
+
+Ntotal = length(y)
+# Specify the data in a list, for later shipment to JAGS:
+dataList = list(
+    y = y ,
+    x = x ,
+    Ntotal = Ntotal ,
+    meanY = mean(y) ,
+    sdY = sd(y)
+)
+
+# model string to pass to stan
+modelString = "
+data {
+    int<lower=1> Ntotal;
+    int x[Ntotal];          //Group variable
+    real y[Ntotal];
+    real meanY;
+    real sdY;
+}
+transformed data {
+    real unifLo;
+    real unifHi;
+    real normalSigma;
+    real expLambda;         //Parameter of prior for nu 
+    unifLo <- sdY/100;
+    unifHi <- sdY*100;
+    normalSigma <- sdY*100;
+    expLambda<-1/30.0;      //Setting value for expLambda
+}
+parameters {
+    real<lower=0> nu;
+    real mu[2];                 //Making 2 groups
+    real<lower=0> sigma[2];     //Making 2 groups
+}
+model {
+    sigma ~ uniform(unifLo, unifHi);        //Recall that sigma is a vector of 2 numbers
+    mu ~ normal(meanY, normalSigma);        //Recall that mu is a vector of 2 numbers
+    nu~exponential(expLambda);      //Exponential prior for nu
+    for (i in 1:Ntotal){
+        y[i] ~ student_t(nu, mu[x[i]], sigma[x[i]]);           //Student_t distribution for y with nested group index
+    }
+    
+}
+"
+
+
+# stan DSO
+stanDsoRobust <- stan_model( model_code=modelString ) 
+```
+
+```{r}
+# run the MCMC
+parameters = c( "mu" , "sigma" , "nu" )     # The parameters to be monitored
+burnInSteps = 1000
+nChains = 4 
+thinSteps = 1
+numSavedSteps<-5000
+# Get MC sample of posterior:
+stanFitRobust <- sampling( object=stanDsoRobust , 
+                   data = dataList , 
+                   pars = parameters , # optional
+                   chains = nChains ,
+                   cores=nChains,
+                   iter = ( ceiling(numSavedSteps/nChains)*thinSteps
+                            +burnInSteps ) , 
+                   warmup = burnInSteps , 
+                   init = "random" , # optional
+                   thin = thinSteps )
+```
+```{r}
+print (stanFitRobust)
+plot(stanFitRobust)
+rstan::traceplot(stanFitRobust, ncol=1, inc_warmup=F)
+pairs(stanFitRobust, pars=c('nu','mu','sigma'))
+stan_scat(stanFitRobust, c('nu','mu[1]'))
+stan_scat(stanFitRobust, c('nu','mu[2]'))
+stan_scat(stanFitRobust, c('nu','sigma[1]'))
+stan_scat(stanFitRobust, c('nu','sigma[2]'))
+stan_scat(stanFitRobust, c('mu[1]','sigma[1]'))
+stan_scat(stanFitRobust, c('sigma[1]','sigma[2]'))
+stan_hist(stanFitRobust)
+stan_ac(stanFitRobust, separate_chains = T)
+stan_diag(stanFitRobust,information = "sample",chain=0)
+stan_diag(stanFitRobust,information = "stepsize",chain = 0)
+stan_diag(stanFitRobust,information = "treedepth",chain = 0)
+stan_diag(stanFitRobust,information = "divergence",chain = 0)
+# launch_shinystan(stanFitRobust)
+
+```
+
+## __2. Do you think it is necessary to change the structure of the model shown on the diagram at the beginning of section 1?__
+
+It's not necessary to change the model structure shown in the diagram because it already does a pretty good job of separating the data groups.
+
+
+## __3. Analyze convergence of MCMC, adjust parameters if necessary and rerun the process to obtain the a better quality of MCMC.__
+
+In the autocorrelation plots above, we see some high autocorrelation up to a lag of about 4. Because of that, we can adjust the thin steps from 1 to 4 in order to fix this & obtain a higher quality MCMC.
+```{r}
+# due to autocorrelation, we can adjust the thin parameter to help
+
+# run the MCMC
+parameters = c( "mu" , "sigma" , "nu" )     # The parameters to be monitored
+burnInSteps = 1000
+nChains = 4 
+thinSteps = 4
+numSavedSteps<-5000
+# Get MC sample of posterior:
+stanFitRobust2 <- sampling( object=stanDsoRobust , 
+                   data = dataList , 
+                   pars = parameters , # optional
+                   chains = nChains ,
+                   cores=nChains,
+                   iter = (ceiling(numSavedSteps/nChains)*thinSteps+burnInSteps ) , 
+                   warmup = burnInSteps , 
+                   init = "random" , # optional
+                   thin = thinSteps )
+
+stan_ac(stanFitRobust2, separate_chains = T)
+
+```
+
+## __4. Answer the main question of the example discusses in section 1.3: Are the two groups different or not?__
+```{r}
+# frequentist
+# t.test(y[x==1],y[x==2], var.equal=F, paired=FALSE)
+
+# bayesian
+summary(stanFitRobust)
+dis1<-cbind(Mu=rstan::extract(stanFitRobust,pars="mu[1]")$'mu[1]',
+            Sigma=rstan::extract(stanFitRobust,pars="sigma[1]")$'sigma[1]')
+dis2<-cbind(Mu=rstan::extract(stanFitRobust,pars="mu[2]")$'mu[2]',
+            Sigma=rstan::extract(stanFitRobust,pars="sigma[2]")$'sigma[2]')
+
+(rbind(mean1HDI=HDIofMCMC(dis1[,1]),mean2HDI=HDIofMCMC(dis2[,1])))
+(rbind(sigma1HDI=HDIofMCMC(dis1[,2]),sigma2HDI=HDIofMCMC(dis2[,2])))
+
+c(mean(dis1[,2]),mean(dis2[,2])) # mean values
+c(sd(dis1[,2]),sd(dis2[,2]))     # standard deviations of samples of MCMC standard deviations
+
+#Kolmogorov-Smirnov test for posterior distributions of standard deviations
+ks.test(dis1[,2],dis2[,2])       
+
+den<-density(dis2[,2])
+plot(density(dis1[,2]),xlim=c(5,30))
+lines(den$x,den$y,col="red")
+
+#t-test for means of posterior distributions for standard deviations
+t.test(dis1[,2],dis2[,2], var.equal=F, paired=FALSE) 
+t.test(dis1[,1],dis2[,1], var.equal=F, paired=FALSE)
+
+
+plot(dis1,xlim=c(92,118),ylim=c(5,33),col="red",xlab="Mean",ylab="St. Dev.")
+points(dis2,col="blue")
+
+```
+
+From the plots as well as tests on the extracted Mu and Sigma values, we can conclude that there are indeed two different groups within the data.
+
+
+## __5. Find at least 3 strong arguments (different models or methods) proving your opinion based on the simulated chains.__
+```{r}
+# structure the data into a dataframe with Mu, Sigma, and Group
+dat1<-as.data.frame(dis1)
+dat1$Group<-0
+dat2<-as.data.frame(dis2)
+dat2$Group<-1
+dat<-rbind(dat1,dat2)
+dat$Group<-as.factor(dat$Group)
+
+
+# logistic model
+log.mod<-glm(Group ~ Mu + Sigma, data=dat,family = "binomial")
+summary(log.mod)
+
+
+# randomForest classification tree
+library(randomForest)
+rf.mod<-randomForest(Group ~ Mu + Sigma, data=dat)
+table(dat$Group,predict(rf.mod,type='response'))
+
+
+# SVM
+library(e1071)
+svm.mod<-svm(Group~Mu+Sigma,data=dat,cost=1,kernel="radial")
+table(dat$Group,predict(svm.mod,type='response'))
+
+```
+The above methods lend evidence to the existence of groups within the data. The logistic regression model summary shows that both Mu and Sigma are very significant in classifying observations into two groups. We wouldn't expect to see this if there were actually no true distinct groups. The other two methods, random forest and support vector machine models, indicate the same conclusion through their confusion matrices. Both models are very good at correctly placing the data points into two distinct groups. If there were truly no groups in the data, we wouldn't expect this models to accurately sort the data this way. So, it looks like there are indeed two different groups within the data.

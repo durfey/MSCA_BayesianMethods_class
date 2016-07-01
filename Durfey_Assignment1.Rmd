@@ -1,0 +1,223 @@
+---
+title: "Bayesian Methods - Assignment 1"
+author: "Ryan Durfey"
+date: "April 4, 2016"
+output: pdf_document
+---
+
+```{r}
+set.seed(11)
+```
+```{r}
+options(width = 80)
+library (faraway)
+data(femsmoke)
+head(femsmoke)
+
+# convert factors into predefinted numeric values
+fem<-femsmoke # dataset copy
+fem$smoker<-as.numeric(fem$smoker)
+fem[fem$smoker==2,2]<-0
+fem$dead<-as.numeric(fem$dead)
+fem[fem$dead==2,3]<-0
+fem$age<-as.numeric(fem$age)
+head(fem)
+
+
+#------------------------------------------------#
+# Create Join Distributions of 3 count variables #
+#------------------------------------------------#
+
+# reshape data into table format that we want
+library(tidyr)
+mat.u0<-spread(fem[fem$dead==0,-3],key=age,value=y)[,-1]
+mat.u1<-spread(fem[fem$dead==1,-3],key=age,value=y)[,-1]
+
+rownames(mat.u1)<-rownames(mat.u0)<-c("smoke.no","smoke.yes")
+colnames(mat.u1)<-colnames(mat.u0)<-c("age.1","age.2","age.3","age.4","age.5","age.6","age.7")
+
+mat.u0<-mat.u0[c(2,1),] # reorder rows to align with what assignment doc shows
+mat.u1<-mat.u1[c(2,1),]
+mat.u0
+mat.u1
+
+(femsmoke.joint.p<-list(dead=mat.u1/sum(fem$y),alive=mat.u0/sum(fem$y)))
+  
+Reduce("+",lapply(femsmoke.joint.p,sum)) # confirms that all the join probs add to one
+
+
+#-------------------------------#
+# Create Marginal Distributions #
+#-------------------------------#
+
+# u
+uMarginal<-c(uAlive=sum(femsmoke.joint.p$alive),uDead=sum(femsmoke.joint.p$dead))
+uMarginal
+
+# v
+marg.v1<-sum(femsmoke.joint.p$alive[1,],femsmoke.joint.p$dead[1,])
+marg.v2<-sum(femsmoke.joint.p$alive[2,],femsmoke.joint.p$dead[2,])
+vMarginal<-c(smoke.yes=marg.v1,smoke.no=marg.v2)
+vMarginal
+
+# w
+marg.w1<-sum(femsmoke.joint.p$alive[,1],femsmoke.joint.p$dead[,1])
+marg.w2<-sum(femsmoke.joint.p$alive[,2],femsmoke.joint.p$dead[,2])
+marg.w3<-sum(femsmoke.joint.p$alive[,3],femsmoke.joint.p$dead[,3])
+marg.w4<-sum(femsmoke.joint.p$alive[,4],femsmoke.joint.p$dead[,4])
+marg.w5<-sum(femsmoke.joint.p$alive[,5],femsmoke.joint.p$dead[,5])
+marg.w6<-sum(femsmoke.joint.p$alive[,6],femsmoke.joint.p$dead[,6])
+marg.w7<-sum(femsmoke.joint.p$alive[,7],femsmoke.joint.p$dead[,7])
+wMarginal<-c(age.1=marg.w1,age.2=marg.w2,age.3=marg.w3,age.4=marg.w4,age.5=marg.w5,
+             age.6=marg.w6,age.7=marg.w7)
+wMarginal
+
+# alternative way to calc
+# wMarginal.age<-colSums(rbind(colSums(femsmoke.joint.p$alive),colSums(femsmoke.joint.p$dead)))
+
+
+
+#--------------------------------------------------#
+# Create conditional distribution p(w,v|u="alive") #
+#--------------------------------------------------#
+(cond.v.w.given.uAlive<-femsmoke.joint.p[["alive"]])
+
+#------------------------------------------------#
+# Create conditional distribution p(v|u="alive") #
+#------------------------------------------------#
+(cond.v.given.uAlive<-apply(femsmoke.joint.p[["alive"]],1,sum)/uMarginal["uAlive"])
+
+#-----------------------------------------------------------#
+# Create conditional distribution p(w|v="alive",u="smoker") #
+#-----------------------------------------------------------#
+(cond.w.given.uAlive.vSmoke<-(femsmoke.joint.p[["alive"]]["smoke.yes",])/
+  (cond.v.given.uAlive[["smoke.yes"]]*uMarginal["uAlive"]))
+
+
+#---------------------------------------------------------------------------------------#
+# Compare the vectors p(w|v2,u1)p(v2|u1)p(u1)p(w|v2,u1)p(v2|u1)p(u1) & p(w,v,u)[,v2,u1] #
+#---------------------------------------------------------------------------------------#
+rbind(uMarginal["uAlive"]*cond.v.given.uAlive["smoke.yes"]*cond.w.given.uAlive.vSmoke,
+      femsmoke.joint.p[["alive"]]["smoke.yes",])
+
+
+
+#--------------------------------------------------------------------------------------#
+# Given simulated age group, simulate variable v using conditional distribution p(v|w) #
+#--------------------------------------------------------------------------------------#
+set.seed(11)
+simulatedData<-data.frame(ages=rep(NA,100),smokers=rep(NA,100),dead=rep(NA,100))
+
+# simulate 100 people with age groups based on wMarginal
+simulatedData$ages<-sample(x=1:7,size=100,prob = wMarginal,replace = TRUE)
+
+# conditional distribution p(v|w)
+cond.vSmokeYes.given.age<-(femsmoke.joint.p[["alive"]]+femsmoke.joint.p[["dead"]])[1,]/
+  wMarginal
+cond.vSmokeNo.given.age<-(femsmoke.joint.p[["alive"]]+femsmoke.joint.p[["dead"]])[2,]/
+  wMarginal
+(cond.Smoke.given.age<-rbind(cond.vSmokeYes.given.age,cond.vSmokeNo.given.age))
+
+# simulate v based on simulated w
+for(i in 1:100){
+  simulatedData[i,2]<-rbinom(n=1,size=1,prob=cond.Smoke.given.age[1,simulatedData[i,1]])
+}
+# check to make sure columns sum to 1
+colSums(cond.Smoke.given.age)
+
+head(simulatedData[,-3],25)
+
+#---------------------------------------------------------------------#
+# Given simulated variables for age and for smoke, simulate mortality #
+# variable using distribution p(dead|v,u), p(alive|v,u)               #
+#---------------------------------------------------------------------#
+
+# p(u,v,w)=p(u|v,w)p(v|w)p(w)
+# p(u|v,w)=p(u,v,w)/(p(v|w)p(w))
+
+p.uvw<-femsmoke.joint.p
+p.v.w<-cond.Smoke.given.age
+p.w<-wMarginal
+
+pp.dead<-matrix(nrow=2,ncol=7)
+for(i in 1:2){
+  for(j in 1:7){
+    pp.dead[i,j]<-p.uvw$dead[i,j]/(p.v.w[i,j]*p.w[j])
+  }
+}
+pp.alive<-matrix(nrow=2,ncol=7)
+for(i in 1:2){
+  for(j in 1:7){
+    pp.alive[i,j]<-p.uvw$alive[i,j]/(p.v.w[i,j]*p.w[j])
+  }
+}
+
+
+# check to make sure each dead/alive pair sums to 1
+for(i in 1:2){
+  for(j in 1:7){
+    print(sum(pp.dead[i,j],pp.alive[i,j]))
+  }
+}
+# yay.
+
+# now simulate
+
+# first, make alternate simulatedData where smoker.no=2
+# this will now also correspond to indices of appropriate probabilities for below
+temp.sim<-simulatedData
+temp.sim[temp.sim$smokers==0,2]<-2
+
+# ok, NOW simulate
+for(i in 1:100){
+  simulatedData[i,3]<-rbinom(n=1,size=1,prob=pp.dead[temp.sim[i,2],temp.sim[i,1]])
+}
+simulatedData
+
+
+
+#-----------------------------------------------------------------------------#
+# SANITY CHECK: Compare joint distribution of simulated with original dataset #
+#-----------------------------------------------------------------------------#
+sim.mat.u0<-matrix(0,nrow=2,ncol=7)
+sim.mat.u1<-matrix(0,nrow=2,ncol=7)
+
+for(i in 0:1){
+  for(j in 1:7){
+    sim.mat.u0[i+1,j]<-nrow(simulatedData[simulatedData$ages==j & simulatedData$smokers==i &
+                                              simulatedData$dead==0,])
+  }
+}
+for(i in 0:1){
+  for(j in 1:7){
+    sim.mat.u1[i+1,j]<-nrow(simulatedData[simulatedData$ages==j & simulatedData$smokers==i &
+                                              simulatedData$dead==1,])
+  }
+}
+
+rownames(sim.mat.u1)<-rownames(sim.mat.u0)<-c("smoke.no","smoke.yes")
+colnames(sim.mat.u1)<-colnames(sim.mat.u0)<-c("age.1","age.2","age.3","age.4","age.5",
+                                              "age.6","age.7")
+
+sim.mat.u0<-sim.mat.u0[c(2,1),] # reorder rows to align with what assignment doc shows
+sim.mat.u1<-sim.mat.u1[c(2,1),]
+sim.mat.u0
+sim.mat.u1
+
+simulated.joint.p<-list(dead=sim.mat.u1,alive=sim.mat.u0)
+N<-sum(unlist(simulated.joint.p))
+(simulated.joint.p<-lapply(simulated.joint.p,"/",N))
+
+femsmoke.joint.p
+
+# The joint distributions are not equal, but our simulated sample size is small, 
+# so variation is not unexpected.
+# 
+# The values are still somewhat close and appear to follow the same general pattern, 
+# so I think it's ok.
+
+# plot comparison of joint distribution values
+plot(unlist(simulated.joint.p),type='b',col='blue')
+lines(unlist(femsmoke.joint.p),type='b',col="red")
+```
+

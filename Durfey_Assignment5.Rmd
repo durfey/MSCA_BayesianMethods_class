@@ -1,0 +1,271 @@
+---
+title: "Bayesian Methods - Assignment 5"
+author: "Ryan Durfey"
+date: "May 6, 2016"
+output: pdf_document
+---
+
+```{r, warning=FALSE, message=FALSE}
+library(rjags)
+library(runjags)
+source("//Users/rdurfey/R_misc/BayesianMethods/DBDA2Eprograms/DBDA2E-utilities.R")
+
+# read in data
+dat<-read.csv("//Users/rdurfey/R_misc/BayesianMethods/CourseProject/MScA_32014_BayesianMethods_CourseProjectData.csv")
+head(dat)
+```
+
+
+# Hierarchical Model
+```{r}
+# data prep
+y=dat$y
+s<-as.numeric(dat$sex)
+(Ntotal<-length(y))
+(Nsubj<-length(unique(s)))
+dataList<-list(y=y,s=s,Ntotal=Ntotal,Nsubj=Nsubj)
+
+# model prep
+modelString <- "
+model {
+  for ( i in 1:Ntotal ) {
+    y[i] ~ dbern( theta[s[i]] )
+  }
+  for ( sIdx in 1:Nsubj ) {
+    theta[sIdx] ~ dbeta( 100 , 100 ) # N.B.: 2,2 prior; change as appropriate.
+  }
+}
+"
+writeLines( modelString , con="TEMPmodel.txt" )
+
+# initialize chains
+initsList = function() {
+  thetaInit = rep(0,Nsubj)
+  for ( sIdx in 1:Nsubj ) { # for each subject
+    includeRows = ( s == sIdx ) # identify rows of this group
+    yThisSubj = y[includeRows]  # extract data of this group
+    resampledY = sample( yThisSubj , replace=TRUE ) # resample
+    thetaInit[sIdx] = sum(resampledY)/length(resampledY) 
+  }
+  thetaInit = 0.001+0.998*thetaInit # keep away from 0,1
+  return( list( theta=thetaInit ) )
+}
+
+# send the model to JAGS
+parameters = c( "theta")     # The parameters to be monitored
+adaptSteps = 500             # Number of steps to adapt the samplers
+burnInSteps = 500            # Number of steps to burn-in the chains
+nChains = 4                  # nChains should be 2 or more for diagnostics 
+numSavedSteps<-50000
+nIter = ceiling(numSavedSteps / nChains )
+
+# create, initialize, and adapt the model
+jagsModel = jags.model( "TEMPmodel.txt" , data=dataList , inits=initsList , 
+                        n.chains=nChains , n.adapt=adaptSteps )
+
+# run burn-in
+update( jagsModel , n.iter=burnInSteps )
+
+# the main run
+codaSamples = coda.samples( jagsModel , variable.names=parameters , n.iter=nIter)
+head(codaSamples)
+
+list.samplers(jagsModel)
+
+# analysis 
+summary(codaSamples)
+plot(codaSamples)
+autocorr.plot(codaSamples,ask=F)
+effectiveSize(codaSamples)
+gelman.diag(codaSamples)
+gelman.plot(codaSamples)
+
+#estimated means
+matrix(unlist(lapply(codaSamples,function(z) apply(z,2,mean))),ncol=2,byrow = T)
+
+# plot of posterior densities
+plot(density(codaSamples[[1]][,1]),xlim=c(0.31,0.41),ylim=c(0,100))
+lines(density(codaSamples[[1]][,2]))
+lines(density(codaSamples[[2]][,1]),col="red")
+lines(density(codaSamples[[2]][,2]),col="red")
+lines(density(codaSamples[[3]][,1]),col="blue")
+lines(density(codaSamples[[3]][,2]),col="blue")
+lines(density(codaSamples[[4]][,1]),col="green")
+lines(density(codaSamples[[4]][,2]),col="green")
+
+# HDIs of each chain
+(HDIofChains<-lapply(codaSamples,function(z) cbind(Theta1=HDIofMCMC(z[,1]),Theta2=HDIofMCMC(z[,2]))))
+
+# differences between theta1 and theta2
+chainDiffs<-lapply(codaSamples,function(z) z[,2]-z[,1])
+
+(leftBounds<-unlist(lapply(chainDiffs,function(z) HDIofMCMC(z,.95)[1])))
+head(chainDiffs[[1]])
+
+# plot of left bound of 95% HDI
+plot(density(chainDiffs[[1]]))#,xlim=c(-.5,1),ylim=c(0,3),col="black")
+lines(density(chainDiffs[[2]]),col="red")
+lines(density(chainDiffs[[3]]),col="blue")
+lines(density(chainDiffs[[4]]),col="green")
+abline(v=leftBounds,col=c("black","red","blue","green"))
+```
+
+From the MCMC output and the plots above, we see clear distinction between the two groups. The Male group's distribution is centered around 0.344 while the Female group is centered around 0.384. There is also little to no overlap between the group distributions. This is also evidenced in the differences between the Theta1 and Theta2 not including zero. This means that we can be confident that there is indeed a difference between the groups. Specifically, males seem to have a lower probability of having a postive opinion about Barack Obama than females. However, both genders probabilities are well below fifty percent.
+
+
+
+# Separate Models for Each Group
+Even though the hierarchical model gave us a pretty solid distinction between the Male and Female groups, we can also try this same example as two separate models where we treat each group's data as separate datasets.
+```{r}
+# try it again, but with separate samples
+
+
+# data prep
+dat.Male<-dat[s==1,]
+dat.Female<-dat[s==2,]
+y.Male<-dat.Male$y
+y.Female<-dat.Female$y
+
+(Ntotal.Male<-length(y.Male))
+(Ntotal.Female<-length(y.Female))
+
+# MLE means
+(MLE.meanMale<-sum(y.Male)/Ntotal.Male)
+(MLE.meanFemale<-sum(y.Female)/Ntotal.Female)
+
+# create data lists
+dataList.Male<-list(y=y.Male,Ntotal=Ntotal.Male)
+dataList.Female<-list(y=y.Female,Ntotal=Ntotal.Female)
+
+
+
+# create model strings
+
+# modelString.Male
+modelString.Male=" 
+model {
+  for (i in 1:Ntotal) {
+    y[i]~dbern(theta)
+  }
+  theta~dbeta(1,1) #Consider different parameterizations of prior
+}
+"
+writeLines( modelString.Male , con="TempModelMale.txt" )
+
+#ModelString.Contr
+modelString.Female=" 
+model {
+  for (i in 1:Ntotal) {
+    y[i]~dbern(theta)
+  }
+  theta~dbeta(1,1) #Consider different parameterizations of prior
+}
+"
+writeLines( modelString.Female , con="TempModelFemale.txt" )
+
+#Initialize function
+initsList = function() {
+  thetaInit = rep(0,Nsubj)
+  for ( sIdx in 1:Nsubj ) { # for each subject
+    includeRows = ( s == sIdx ) # identify rows of this group
+    yThisSubj = y[includeRows]  # extract data of this group
+    resampledY = sample( yThisSubj , replace=TRUE ) # resample
+    thetaInit[sIdx] = sum(resampledY)/length(resampledY) 
+  }
+  thetaInit = 0.001+0.998*thetaInit # keep away from 0,1
+  return( list( theta=thetaInit ) )
+}
+
+
+
+### Run MCMC for the Male group
+
+#Create model Male
+jagsModel.Male<-jags.model(file="TempModelMale.txt",data=dataList.Male,n.chains=4,n.adapt=500)
+
+# Update Male
+update(jagsModel.Male,n.iter=600)
+
+# Run Male
+codaSamples.Male<-coda.samples(jagsModel.Male,variable.names=c("theta"),n.iter=3334)
+list.samplers(jagsModel.Male)
+
+# analyze Male
+plot(codaSamples.Male)
+autocorr.plot(codaSamples.Male,ask=F)
+effectiveSize(codaSamples.Male)
+gelman.diag(codaSamples.Male)
+gelman.plot(codaSamples.Male)
+lapply(codaSamples.Male,mean)
+
+l<-min(unlist(codaSamples.Male))-.005
+h<-max(unlist(codaSamples.Male))+.005
+histBreaks<-seq(l,h,by=.005)
+postHist.Male<-lapply(codaSamples.Male,hist,breaks=histBreaks)
+
+plot(postHist.Male[[1]]$mids,postHist.Male[[1]]$density,type="l",col="black",lwd=2,ylab="Distribution Density (Male)",xlab="Theta",ylim=c(0,80))
+lines(postHist.Male[[2]]$mids,postHist.Male[[2]]$density,type="l",col="red",lwd=2)
+lines(postHist.Male[[3]]$mids,postHist.Male[[3]]$density,type="l",col="blue",lwd=2)
+lines(postHist.Male[[4]]$mids,postHist.Male[[4]]$density,type="l",col="green",lwd=2)
+lines(postHist.Male[[3]]$mids,dbeta(postHist.Male[[3]]$mids,1+sum(y.Male),Ntotal.Male-sum(y.Male)+1),type="l",col="purple",lwd=3)
+legend("topright",legend=c("Chain1","Chain2","Chain3","Chain4","Theoretical"),col=c("black","red","blue","green"),lwd=2)
+
+(HDIofChains.Contr<-lapply(codaSamples.Male,function(z)
+  Theta.Contr=HDIofMCMC(z[,1])))
+
+
+
+
+### Run MCMC for the Female group
+
+#Create model FeFemale
+jagsModel.Female<-jags.model(file="TempModelFemale.txt",data=dataList.Female,n.chains=4,n.adapt=500)
+
+# Update Female
+update(jagsModel.Female,n.iter=600)
+
+# Run Female
+codaSamples.Female<-coda.samples(jagsModel.Female,variable.names=c("theta"),n.iter=3334)
+list.samplers(jagsModel.Female)
+
+# analyze Female
+plot(codaSamples.Female)
+autocorr.plot(codaSamples.Female,ask=F)
+effectiveSize(codaSamples.Female)
+gelman.diag(codaSamples.Female)
+gelman.plot(codaSamples.Female)
+lapply(codaSamples.Female,mean)
+
+l<-min(unlist(codaSamples.Female))-.005
+h<-max(unlist(codaSamples.Female))+.005
+histBreaks<-seq(l,h,by=.005)
+postHist.Female<-lapply(codaSamples.Female,hist,breaks=histBreaks)
+
+plot(postHist.Female[[1]]$mids,postHist.Female[[1]]$density,type="l",col="black",lwd=2,ylab="Distribution Density (Female)",xlab="Theta",ylim=c(0,90))
+lines(postHist.Female[[2]]$mids,postHist.Female[[2]]$density,type="l",col="red",lwd=2)
+lines(postHist.Female[[3]]$mids,postHist.Female[[3]]$density,type="l",col="blue",lwd=2)
+lines(postHist.Female[[4]]$mids,postHist.Female[[4]]$density,type="l",col="green",lwd=2)
+lines(postHist.Female[[4]]$mids,dbeta(postHist.Female[[4]]$mids,1+sum(y.Female),Ntotal.Female-sum(y.Female)+1),type="l",col="purple",lwd=3)
+legend("topright",legend=c("Chain1","Chain2","Chain3","Chain4","Theoretical"),col=c("black","red","blue","green"),lwd=2)
+
+(HDIofChains.Contr<-lapply(codaSamples.Female,function(z)
+  Theta.Contr=HDIofMCMC(z[,1])))
+
+#Find differences between Male and Female groups and their HDIs
+Male.Female.diffs<-sapply(1:4,function(z) codaSamples.Female[[z]]-codaSamples.Male[[z]])
+(HDI.diffs<-apply(Male.Female.diffs,2,function(z) HDIofMCMC(z,.95)))
+
+#Plot densities and the 95% HDI limits
+plot(density(Male.Female.diffs[,1]))#,xlim=c(-.5,1),ylim=c(0,3),col="black")
+lines(density(Male.Female.diffs[,2]),col="red")
+lines(density(Male.Female.diffs[,3]),col="blue")
+lines(density(Male.Female.diffs[,4]),col="green")
+abline(v=HDI.diffs[1,],col=c("black","red","blue","green"))
+```
+```{r}
+#Compare left bounds of hierarchical model and separate models
+rbind(Hierarchical=leftBounds,Separate=HDI.diffs[1,])
+
+```
+
+Just like in the first hierarchical model, we see the same distinction between groups. Males have a lower probability by a few percentage points than females to have a positive opinion about Barack Obama.
